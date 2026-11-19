@@ -1,0 +1,57 @@
+# Rebuilds rooms.json from LibCal and publishes it to GitHub Pages.
+#
+# Setup (once):
+#   Settings → Secrets and variables → Actions → add
+#     LIBCAL_CLIENT_ID, LIBCAL_CLIENT_SECRET
+#   Settings → Pages → Source: "GitHub Actions"
+#
+# Published at: https://<owner>.github.io/<repo>/rooms.json
+# If the build fails (LibCal down, partial data), nothing is deployed and the
+# previous rooms.json stays live.
+name: Refresh room data
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"   # every 6 hours (UTC), off the top of the hour
+  workflow_dispatch:          # "Run workflow" button
+  push:
+    branches: [main]
+    paths:
+      - scripts/build_rooms.py
+      - .github/workflows/rooms.yml
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Fetch rooms from LibCal
+        env:
+          LIBCAL_CLIENT_ID: ${{ secrets.LIBCAL_CLIENT_ID }}
+          LIBCAL_CLIENT_SECRET: ${{ secrets.LIBCAL_CLIENT_SECRET }}
+        run: python scripts/build_rooms.py dist/rooms.json
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
