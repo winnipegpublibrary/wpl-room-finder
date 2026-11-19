@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Fetch WPL bookable rooms from LibCal and write a static JSON file for the
-room finder widget (wpl-room-finder.js).
+room finder widget (winnipeg-ca-wpl-room-finder.js).
 
 Usage:
     LIBCAL_CLIENT_ID=... LIBCAL_CLIENT_SECRET=... python3 build_rooms.py out/rooms.json
@@ -28,11 +28,39 @@ LIDS = [
 ]
 
 # Matched against LibCal category names. Keep in sync with ROOM_TYPES in
-# wpl-room-finder.js (only the keys matter to the widget).
+# winnipeg-ca-wpl-room-finder.js (only the keys matter to the widget).
 ROOM_TYPES = {
     # "Program rooms" are the same spaces as meeting rooms, so they're folded in.
     "meeting": re.compile(r"meeting|mtg|program|r[ée]union", re.I),
     "tutorial": re.compile(r"tutorial|tutorat", re.I),
+}
+
+# Public LibCal hours feed (no API key needed). Used only for branch
+# coordinates, for the widget's map view.
+HOURS_FEED = "https://wpl.libcal.com/api_hours_today.php?iid=3164&lid=0&format=json"
+
+# Spaces location ID -> Hours location ID. LibCal numbers them separately.
+HOURS_LID = {
+    372: 1262,  # Millennium
+    385: 7343,  # Bill and Helen Norrie
+    376: 1264,  # Charleswood
+    378: 1265,  # Cornish
+    379: 1266,  # Fort Garry
+    391: 1280,  # Harvey Smith
+    380: 1268,  # Henderson
+    381: 1269,  # Louis Riel
+    382: 1270,  # Munroe
+    383: 1271,  # Osborne
+    384: 1272,  # Pembina Trail
+    377: 1274,  # St. Boniface
+    386: 1278,  # Sir William Stephenson
+    387: 1275,  # St. James-Assiniboia
+    388: 1276,  # St. John's
+    389: 1277,  # St. Vital
+    390: 1279,  # Transcona
+    392: 1281,  # West Kildonan
+    393: 1282,  # Westwood
+    394: 1283,  # Windsor Park
 }
 
 BATCH_SIZE = 20  # IDs per comma-separated request; 1 disables batching
@@ -102,7 +130,27 @@ def room_type(category_name):
     return None
 
 
+def branch_coords():
+    """{hours_lid: (lat, lng)} from the public hours feed. Non-fatal: if the
+    feed is down, branches just have no coordinates (widget hides maps)."""
+    req = urllib.request.Request(HOURS_FEED, headers={"User-Agent": "wpl-room-finder-build/1.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+            locs = json.load(resp).get("locations") or []
+    except (urllib.error.URLError, ValueError) as e:
+        print(f"  WARNING hours feed unavailable, no coordinates: {e}", file=sys.stderr)
+        return {}
+    coords = {}
+    for loc in locs:
+        try:
+            coords[int(loc["lid"])] = (float(loc["lat"]), float(loc["long"]))
+        except (KeyError, TypeError, ValueError):
+            pass  # no coordinates for this location
+    return coords
+
+
 def build(api):
+    coords = branch_coords()
     # 1. Categories per branch.
     locs = api.fetch_many("/space/categories", LIDS, "lid")
     branches, categories = [], []
@@ -110,7 +158,10 @@ def build(api):
         loc = locs.get(str(lid))
         if not loc:
             continue
-        branches.append({"lid": lid, "name": loc.get("name", ""), "order": order})
+        branch = {"lid": lid, "name": loc.get("name", ""), "order": order}
+        if HOURS_LID.get(lid) in coords:
+            branch["lat"], branch["lng"] = coords[HOURS_LID[lid]]
+        branches.append(branch)
         for cat in loc.get("categories") or []:
             t = room_type(cat.get("name"))
             if t:
@@ -185,7 +236,9 @@ def main():
 
     by_type = {t: sum(r["type"] == t for r in data["rooms"]) for t in ROOM_TYPES}
     print(f"{len(data['branches'])} branches, {len(data['rooms'])} rooms {by_type}, "
-          f"{len(data['filters'])} filters — {api.requests} API requests, {api.failures} failures")
+          f"{len(data['filters'])} filters, "
+          f"{sum('lat' in b for b in data['branches'])} branches with coordinates — "
+          f"{api.requests} API requests, {api.failures} failures")
 
     if api.failures or not data["rooms"]:
         sys.exit("not writing output: incomplete data")
